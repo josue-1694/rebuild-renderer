@@ -251,8 +251,18 @@ body {
   ${slide.subtext ? `<div class="body-text">${slide.subtext}</div>` : ''}
 
   ${isCTA ? `
+    <div class="yellow-box" style="font-size:72px;text-align:center;">
+      ¿Cuál es tu<br>riesgo metabólico?
+    </div>
+    <div class="headline" style="text-align:center;">
+      Descúbrelo GRATIS<br>en 3 minutos. 🧬
+    </div>
     <div class="cta-box">mynutritionworld.net</div>
-    <div class="cta-sub">${lang === 'es' ? '🧬 Calcula tu riesgo metabólico GRATIS' : '🧬 Calculate your metabolic risk FREE'}</div>
+    <div class="cta-sub">
+      ${lang === 'es'
+        ? 'Calcula tu perfil metabólico post-GLP-1'
+        : 'Calculate your post-GLP-1 metabolic profile'}
+    </div>
   ` : ''}
 </div>
 
