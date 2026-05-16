@@ -9,9 +9,15 @@ app.use(express.json({ limit: '10mb' }))
 
 const PORT = process.env.PORT || 3001
 
+const ws = require('ws')
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
+  process.env.SUPABASE_SERVICE_ROLE_KEY,
+  {
+    realtime: {
+      transport: ws,
+    },
+  }
 )
 
 // ── Health check ─────────────────────────────────────────────────────────────
