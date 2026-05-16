@@ -236,7 +236,7 @@ body {
 <div class="slide-num">${slideNum}/${totalSlides}</div>
 
 <div class="content">
-  ${slide.label ? `<div class="label">${slide.label}</div>` : ''}
+  ${slide.label && !isCTA ? `<div class="label">${slide.label}</div>` : ''}
 
   ${slide.stat
     ? `<div class="yellow-box">${slide.stat}</div>`
