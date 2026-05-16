@@ -1,0 +1,19 @@
+{
+  "name": "rebuild-carousel-renderer",
+  "version": "1.0.0",
+  "description": "REBUILD Protocol carousel slide renderer",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "build": "npx puppeteer browsers install chrome"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "puppeteer": "^24.0.0",
+    "@supabase/supabase-js": "^2.39.0",
+    "cors": "^2.8.5"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
