@@ -177,11 +177,12 @@ body {
 }
 .highlight { color: #D4FF00; font-weight: 900; }
 .cta-box {
-  background: ${barColor};
-  color: #111827;
-  font-size: 52px;
+  background: #1a4a1a;
+  border: 2px solid #2D6A1F;
+  color: #D4FF00;
+  font-size: 44px;
   font-weight: 900;
-  padding: 28px 44px;
+  padding: 24px 44px;
   border-radius: 32px;
   display: block;
   width: 100%;
@@ -236,7 +237,7 @@ body {
 <div class="slide-num">${slideNum}/${totalSlides}</div>
 
 <div class="content">
-  ${slide.label && !isCTA ? `<div class="label">${slide.label}</div>` : ''}
+  ${slide.label && slideNum < totalSlides ? `<div class="label">${slide.label}</div>` : ''}
 
   ${slide.stat
     ? `<div class="yellow-box">${slide.stat}</div>`
