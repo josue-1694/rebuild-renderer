@@ -1,7 +1,11 @@
-const express   = require('express')
-const puppeteer = require('puppeteer')
-const { createClient } = require('@supabase/supabase-js')
-const cors = require('cors')
+const express              = require('express')
+const puppeteer            = require('puppeteer')
+const { createClient }     = require('@supabase/supabase-js')
+const cors                 = require('cors')
+const { execSync }         = require('child_process')
+const fs                   = require('fs')
+const path                 = require('path')
+const os                   = require('os')
 
 const app = express()
 app.use(cors())
@@ -281,6 +285,162 @@ body {
 </body>
 </html>`
 }
+
+// ── Video processing: B-roll overlay + thumbnail generation ──────────────────
+app.post('/process-video', async (req, res) => {
+  const {
+    videoUrl,
+    videoName   = 'video.mp4',
+    brollUrls   = [],
+  } = req.body
+
+  if (!videoUrl) return res.status(400).json({ error: 'videoUrl required' })
+
+  const tmpDir       = fs.mkdtempSync(path.join(os.tmpdir(), 'rebuild-'))
+  const mainVideo    = path.join(tmpDir, 'main.mp4')
+  const thumbnailPath = path.join(tmpDir, 'thumbnail.jpg')
+
+  try {
+    // 1. Download main video
+    console.log('Downloading main video:', videoUrl.substring(0, 80))
+    execSync(`curl -L --max-time 120 -o "${mainVideo}" "${videoUrl}"`, { timeout: 130000 })
+
+    // 2. Get duration
+    const durationRaw = execSync(
+      `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${mainVideo}"`
+    ).toString().trim()
+    const duration = parseFloat(durationRaw) || 30
+    console.log('Duration:', duration, 's')
+
+    let finalVideo = mainVideo
+
+    // 3. Add B-roll overlay (picture-in-picture, bottom-right, 5s each clip)
+    if (brollUrls.length > 0) {
+      console.log('Adding B-roll, clips:', brollUrls.length)
+      const brollFiles = []
+
+      for (let i = 0; i < Math.min(brollUrls.length, 3); i++) {
+        const brollPath = path.join(tmpDir, 'broll_' + i + '.mp4')
+        try {
+          execSync(`curl -L --max-time 60 -o "${brollPath}" "${brollUrls[i]}"`, { timeout: 70000 })
+          if (fs.existsSync(brollPath) && fs.statSync(brollPath).size > 1000) {
+            brollFiles.push(brollPath)
+            console.log('B-roll', i, 'downloaded')
+          }
+        } catch (e) {
+          console.log('B-roll', i, 'download failed:', e.message.substring(0, 60))
+        }
+      }
+
+      if (brollFiles.length > 0) {
+        const brollOutput = path.join(tmpDir, 'with_broll.mp4')
+        const inputs = brollFiles.map(f => `-i "${f}"`).join(' ')
+
+        // Build filter: scale each broll to 320x180, overlay bottom-right for 5s windows
+        const scaleFilters = brollFiles.map((f, i) =>
+          `[${i + 1}:v]scale=320:180,setpts=PTS-STARTPTS[broll${i}]`
+        ).join(';')
+
+        let overlayChain = '[0:v]'
+        const overlayParts = brollFiles.map((f, i) => {
+          const start = i * 5
+          const end   = start + 5
+          const out   = i < brollFiles.length - 1 ? `[tmp${i}]` : '[vout]'
+          const part  = `[broll${i}]overlay=W-330:H-190:enable='between(t,${start},${end})'${out}`
+          const prev  = i === 0 ? overlayChain : `[tmp${i - 1}]`
+          return `${prev}${part}`
+        })
+
+        // Rebuild as proper filtergraph
+        const filterParts = [scaleFilters]
+        let chain = '[0:v]'
+        brollFiles.forEach((f, i) => {
+          const start = i * 5
+          const end   = start + 5
+          const inTag = i === 0 ? '[0:v]' : `[vtmp${i - 1}]`
+          const outTag = i < brollFiles.length - 1 ? `[vtmp${i}]` : '[vfinal]'
+          filterParts.push(`${inTag}[broll${i}]overlay=W-330:H-190:enable='between(t,${start},${end})'${outTag}`)
+        })
+
+        const filterComplex = brollFiles.map((f, i) =>
+          `[${i + 1}:v]scale=320:180,setpts=PTS-STARTPTS[broll${i}]`
+        ).join(';') + ';' + (() => {
+          let graph = ''
+          brollFiles.forEach((f, i) => {
+            const start  = i * 5
+            const end    = start + 5
+            const inTag  = i === 0 ? '[0:v]' : `[vtmp${i - 1}]`
+            const outTag = i < brollFiles.length - 1 ? `[vtmp${i}]` : '[vfinal]'
+            graph += `${inTag}[broll${i}]overlay=W-330:H-190:enable='between(t,${start},${end})'${outTag};`
+          })
+          return graph.replace(/;$/, '')
+        })()
+
+        try {
+          execSync(
+            `ffmpeg -y -i "${mainVideo}" ${inputs} ` +
+            `-filter_complex "${filterComplex}" ` +
+            `-map "[vfinal]" -map 0:a -c:v libx264 -preset fast -crf 23 -c:a aac -shortest "${brollOutput}"`,
+            { timeout: 180000 }
+          )
+          if (fs.existsSync(brollOutput) && fs.statSync(brollOutput).size > 1000) {
+            finalVideo = brollOutput
+            console.log('B-roll overlay applied')
+          }
+        } catch (e) {
+          console.log('B-roll overlay failed, using original. Error:', e.message.substring(0, 120))
+        }
+      }
+    }
+
+    // 4. Generate thumbnail at 1s mark (portrait 1080x1920)
+    console.log('Generating thumbnail...')
+    try {
+      execSync(
+        `ffmpeg -y -i "${finalVideo}" -ss 00:00:01 -vframes 1 -vf "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2" "${thumbnailPath}"`,
+        { timeout: 30000 }
+      )
+    } catch (e) {
+      // Fallback: any frame
+      execSync(`ffmpeg -y -i "${finalVideo}" -vframes 1 "${thumbnailPath}"`, { timeout: 15000 })
+    }
+
+    // 5. Upload to Supabase
+    const videoBuffer = fs.readFileSync(finalVideo)
+    const thumbBuffer = fs.existsSync(thumbnailPath) ? fs.readFileSync(thumbnailPath) : null
+
+    const safeVideoName = videoName.replace(/[^a-zA-Z0-9._-]/g, '_')
+    const ts            = Date.now()
+    const videoFilename = `videos/${ts}_${safeVideoName}`
+    const thumbFilename = `thumbnails/${ts}_thumb.jpg`
+
+    const { error: videoErr } = await supabase.storage
+      .from('content')
+      .upload(videoFilename, videoBuffer, { contentType: 'video/mp4', upsert: true })
+    if (videoErr) throw new Error('Video upload: ' + videoErr.message)
+
+    let thumbPublicUrl = null
+    if (thumbBuffer) {
+      const { error: thumbErr } = await supabase.storage
+        .from('content')
+        .upload(thumbFilename, thumbBuffer, { contentType: 'image/jpeg', upsert: true })
+      if (!thumbErr) {
+        thumbPublicUrl = supabase.storage.from('content').getPublicUrl(thumbFilename).data.publicUrl
+      }
+    }
+
+    const videoPublicUrl = supabase.storage.from('content').getPublicUrl(videoFilename).data.publicUrl
+    console.log('Done:', videoPublicUrl)
+
+    res.json({ success: true, videoUrl: videoPublicUrl, thumbnailUrl: thumbPublicUrl, duration })
+
+  } catch (err) {
+    console.error('process-video error:', err.message)
+    res.status(500).json({ error: err.message })
+  } finally {
+    try { execSync(`rm -rf "${tmpDir}"`) } catch (_) {}
+  }
+})
 
 app.listen(PORT, () => {
   console.log(`REBUILD Renderer running on port ${PORT}`)

@@ -3,6 +3,7 @@ FROM node:22-slim
 # Install Chromium + all required system dependencies
 RUN apt-get update && apt-get install -y \
   chromium \
+  ffmpeg \
   fonts-liberation \
   fonts-freefont-ttf \
   libappindicator3-1 \
@@ -38,6 +39,7 @@ RUN apt-get update && apt-get install -y \
   libxtst6 \
   ca-certificates \
   wget \
+  curl \
   --no-install-recommends \
   && rm -rf /var/lib/apt/lists/*
 
