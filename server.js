@@ -442,6 +442,73 @@ app.post('/process-video', async (req, res) => {
   }
 })
 
+// ── /submit-mirage ─────────────────────────────────────────────────────────
+// Downloads a video and uploads it to Mirage as multipart/form-data.
+// Called by Vercel (which has a shorter timeout) — Railway has no timeout limits.
+app.post('/submit-mirage', async (req, res) => {
+  const { videoUrl, templateId, mirageKey } = req.body
+  if (!videoUrl || !templateId || !mirageKey) {
+    return res.status(400).json({ error: 'videoUrl, templateId, mirageKey required' })
+  }
+
+  try {
+    const https    = require('https')
+    const http     = require('http')
+    const FormData = require('form-data')
+    const fetch    = require('node-fetch')
+
+    console.log('[submit-mirage] Downloading:', videoUrl.substring(0, 80))
+
+    // Recursive download with redirect support
+    const downloadVideo = (url, redirects = 0) => new Promise((resolve, reject) => {
+      if (redirects > 5) return reject(new Error('Too many redirects'))
+      const chunks   = []
+      const protocol = url.startsWith('https') ? https : http
+      const request  = protocol.get(url, (response) => {
+        if (response.statusCode === 301 || response.statusCode === 302) {
+          return downloadVideo(response.headers.location, redirects + 1)
+            .then(resolve).catch(reject)
+        }
+        if (response.statusCode !== 200) {
+          return reject(new Error('Download failed: ' + response.statusCode))
+        }
+        response.on('data', chunk => chunks.push(chunk))
+        response.on('end',  () => resolve(Buffer.concat(chunks)))
+        response.on('error', reject)
+      })
+      request.on('error', reject)
+      request.setTimeout(120000, () => { request.destroy(); reject(new Error('Download timeout')) })
+    })
+
+    const videoBuffer = await downloadVideo(videoUrl)
+    console.log('[submit-mirage] Downloaded:', videoBuffer.length, 'bytes')
+
+    const form = new FormData()
+    form.append('caption_template_id', templateId)
+    form.append('video', videoBuffer, { filename: 'video.mp4', contentType: 'video/mp4' })
+
+    const mirageRes = await fetch('https://api.mirage.app/v1/videos/captions', {
+      method:  'POST',
+      headers: { 'x-api-key': mirageKey, ...form.getHeaders() },
+      body:    form,
+      timeout: 120000,
+    })
+
+    const data = await mirageRes.json()
+    console.log('[submit-mirage] Mirage response [' + mirageRes.status + ']:', JSON.stringify(data).substring(0, 200))
+
+    res.json({
+      success: !data.error,
+      jobId:   data?.id || null,
+      error:   data?.error || null,
+    })
+
+  } catch (e) {
+    console.error('[submit-mirage] error:', e.message)
+    res.status(500).json({ error: e.message })
+  }
+})
+
 app.listen(PORT, () => {
   console.log(`REBUILD Renderer running on port ${PORT}`)
 })
