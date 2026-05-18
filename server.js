@@ -509,6 +509,95 @@ app.post('/submit-mirage', async (req, res) => {
   }
 })
 
+// ── /intake-video ──────────────────────────────────────────────────────────
+// Called by whatsapp-webhook.js instead of process-video directly.
+// Downloads Twilio media (with Basic Auth), uploads to Supabase Storage,
+// then fires /api/process-video with a clean public URL.
+// This is necessary because Twilio media URLs use HTTP Basic Auth which
+// HeyGen and Mirage cannot handle — they need a plain public URL.
+app.post('/intake-video', async (req, res) => {
+  const { twilioUrl, twilioSid, twilioToken, videoName, lang, stage } = req.body
+  if (!twilioUrl || !twilioSid || !twilioToken) {
+    return res.status(400).json({ error: 'twilioUrl, twilioSid, twilioToken required' })
+  }
+
+  // Respond immediately — download + upload happens async
+  res.json({ received: true, videoName })
+
+  try {
+    const fetch    = require('node-fetch')
+    const NEXT_APP = process.env.NEXT_APP_URL || 'https://rebuild.mynutritionworld.net'
+
+    console.log('[intake-video] Downloading from Twilio:', twilioUrl.substring(0, 80))
+
+    // Download using explicit Authorization header (more reliable than user:pass@ in URL)
+    const credentials = Buffer.from(`${twilioSid}:${twilioToken}`).toString('base64')
+    const dlRes = await fetch(twilioUrl, {
+      headers: { Authorization: `Basic ${credentials}` },
+      redirect: 'follow',
+      timeout:  120000,
+    })
+
+    if (!dlRes.ok) {
+      console.error('[intake-video] Twilio download failed:', dlRes.status, dlRes.statusText)
+      // Fallback: fire pipeline with embedded-auth URL (might work for some services)
+      await fetch(`${NEXT_APP}/api/process-video`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          videoUrl:  twilioUrl.replace('https://', `https://${twilioSid}:${twilioToken}@`),
+          videoName, lang: lang || 'es', stage: stage || 'post',
+        }),
+        timeout: 30000,
+      }).catch(e => console.error('[intake-video] fallback pipeline error:', e.message))
+      return
+    }
+
+    const videoBuffer = Buffer.from(await dlRes.arrayBuffer())
+    console.log('[intake-video] Downloaded:', videoBuffer.length, 'bytes')
+
+    // Upload to Supabase Storage — content bucket (public)
+    const fileName  = videoName || `whatsapp_${Date.now()}.mp4`
+    const storagePath = `whatsapp/${fileName}`
+    const uploadRes = await fetch(
+      `${process.env.SUPABASE_URL}/storage/v1/object/content/${storagePath}`,
+      {
+        method:  'POST',
+        headers: {
+          Authorization:  `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
+          'Content-Type': 'video/mp4',
+        },
+        body: videoBuffer,
+        timeout: 120000,
+      }
+    )
+
+    let publicUrl
+    if (uploadRes.ok || uploadRes.status === 200 || uploadRes.status === 409) {
+      // 409 = already exists (upsert via DELETE+POST workaround not needed)
+      publicUrl = `${process.env.SUPABASE_URL}/storage/v1/object/public/content/${storagePath}`
+      console.log('[intake-video] Uploaded to Supabase:', publicUrl)
+    } else {
+      const uploadErr = await uploadRes.text()
+      console.error('[intake-video] Supabase upload failed:', uploadRes.status, uploadErr.substring(0, 200))
+      // Fallback: use Twilio URL with embedded auth
+      publicUrl = twilioUrl.replace('https://', `https://${twilioSid}:${twilioToken}@`)
+    }
+
+    // Fire process-video pipeline with the public URL
+    console.log('[intake-video] Firing pipeline for:', fileName)
+    await fetch(`${NEXT_APP}/api/process-video`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ videoUrl: publicUrl, videoName: fileName, lang: lang || 'es', stage: stage || 'post' }),
+      timeout: 30000,
+    }).catch(e => console.error('[intake-video] pipeline fire error:', e.message))
+
+  } catch (e) {
+    console.error('[intake-video] fatal error:', e.message)
+  }
+})
+
 app.listen(PORT, () => {
   console.log(`REBUILD Renderer running on port ${PORT}`)
 })
